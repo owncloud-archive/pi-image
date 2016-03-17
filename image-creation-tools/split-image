@@ -1,0 +1,99 @@
+#!/bin/sh
+#
+# This utility takes an Ubuntu Core image for the rpi2, and turns it into
+# two disk images, one containing the bootable system and the other
+# containing the writable system. This allows for the bootable system to be
+# flashed to the SD card, but the writable to, say, an external hard drive.
+#
+# Author: Kyle Fazzari <kyle@canonical.com>
+
+verify_installed()
+{
+	package_name=$1
+	dpkg-query --show $1 > /dev/null 2>&1
+	if [ $? -ne 0 ]; then
+		echo "Please install the $1 package"
+		exit 1
+	fi
+}
+
+check_success()
+{
+	if [ $? -eq 0 ]; then
+		echo " done"
+	else
+		echo " ERROR"
+		exit 2
+	fi
+}
+
+print_usage()
+{
+	echo "Usage:"
+	echo "\t$0 snappy-image"
+}
+
+if [ -z "$1" ]; then
+	print_usage
+	exit 3
+fi
+
+# This script has some required packages. Print nice messages if they're
+# missing.
+verify_installed util-linux # Contains fdisk and sfdisk
+
+snappy_image=$1
+
+# We have a single image now, containing both the bootable system and the
+# writable partition. We're going to extract both partitions into separate
+# images, each of which we'll need to first create. We need to make sure
+# they're the right size.
+bootable_start=$(fdisk -l $snappy_image | grep img1 | awk '{print $3}')
+bootable_end=$(fdisk -l $snappy_image | grep img1 | awk '{print $4}')
+bootable_sectors=$(fdisk -l $snappy_image | grep img1 | awk '{print $5}')
+bootable_id=$(fdisk -l $snappy_image | grep img1 | awk '{print $7}')
+bootable_image=bootable.img
+
+writable_start=$(fdisk -l $snappy_image | grep img2 | awk '{print $2}')
+writable_end=$(fdisk -l $snappy_image | grep img2 | awk '{print $3}')
+writable_sectors=$(fdisk -l $snappy_image | grep img2 | awk '{print $4}')
+writable_id=$(fdisk -l $snappy_image | grep img2 | awk '{print $6}')
+writable_image=writable.img
+
+# Let's do the bootable image first. We'll create an image perfectly sized for
+# the bootable partition. We don't want to deal with alignment issues here.
+total_bootable_sectors=$(($bootable_start+$bootable_sectors))
+echo -n "Creating empty bootable image..."
+dd if=/dev/zero of=$bootable_image bs=512 count=$total_bootable_sectors > /dev/null 2>&1
+check_success
+
+# Make sure the image has the necessary partition table (bootable flag, etc.)
+echo -n "Partitioning $bootable_image..."
+sfdisk $bootable_image > /dev/null << EOF
+$bootable_start,$bootable_sectors,$bootable_id,*
+EOF
+check_success
+
+# Now copy over the bootable partition
+echo -n "Copying bootable partition..."
+dd if=$snappy_image of=$bootable_image bs=512 skip=$bootable_start seek=$bootable_start count=$bootable_sectors > /dev/null 2>&1
+check_success
+
+# Now let's do the writable image. We'll create an image perfectly sized for
+# the writable partition (take into account the typical 2048 alignment).
+size_with_alignment=$(($writable_sectors+2048))
+echo -n "Creating empty writable image..."
+dd if=/dev/zero of=$writable_image bs=512 count=$size_with_alignment > /dev/null 2>&1
+check_success
+
+# Make sure the image has the necessary partition table
+echo -n "Partitioning $writable_image..."
+sfdisk $writable_image > /dev/null << EOF
+,$writable_sectors,$writeable_id
+EOF
+check_success
+
+# Finally, copy over the writable partition
+echo -n "Copying writable partition..."
+dd if=$snappy_image of=$writable_image bs=512 skip=$writable_start seek=2048 count=$writable_sectors > /dev/null 2>&1
+check_success

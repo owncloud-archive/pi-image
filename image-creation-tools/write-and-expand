@@ -1,0 +1,74 @@
+#!/bin/sh
+#
+# This utility is really just a fancy `dd`. It dd's an image onto
+# a destination device (a device, not a partition), and then expands
+# it to utilize all available space.
+#
+# Author: Kyle Fazzari <kyle@canonical.com>
+
+verify_installed()
+{
+        package_name=$1
+        dpkg-query --show $1 > /dev/null 2>&1
+        if [ $? -ne 0 ]; then
+                echo "Please install the $1 package"
+                exit 1
+        fi
+}
+
+check_success()
+{
+        if [ $? -ne 0 ]; then
+                echo " ERROR"
+                exit 2
+        fi
+}
+
+print_usage()
+{
+	echo "Usage:"
+	echo "\t$0 image destination"
+	echo ""
+	echo "Note that the destination must be a device, not a partition (e.g. /dev/sdb, not /dev/sdb1)"
+}
+
+if [ -z "$1" -o -z "$2" ]; then
+	print_usage
+	exit 1
+fi
+
+# This script has some required packages. Print nice messages if they're
+# missing.
+verify_installed util-linux # Contains fdisk and sfdisk
+verify_installed e2fsprogs # Contains e2fsck and resize2fs
+
+image=$1
+destination=$2
+
+echo "Writing $image to $destination (may prompt for sudo)..."
+sudo dd if=$image of=$destination bs=32M
+check_success
+
+echo "Querying disk (may prompt for sudo)..."
+fdisk_output=$(sudo fdisk -l $destination | tail -1)
+check_success
+
+partition=$(echo "$fdisk_output" | awk '{print $1}')
+start=$(echo "$fdisk_output" | awk '{print $2}')
+end=$(echo "$fdisk_output" | awk '{print $3}')
+sectors=$(echo "$fdisk_output" | awk '{print $4}')
+id=$(echo "$fdisk_output" | awk '{print $6}')
+
+echo "Attempting to expand partition to fill all available space (may prompt for sudo)..."
+sudo sfdisk $destination > /dev/null << EOF
+$start,,$id
+EOF
+check_success
+
+echo "Checking partition for errors (may prompt for sudo)..."
+sudo e2fsck -f $partition
+check_success
+
+echo "Resizing filesystem (may prompt for sudo)..."
+sudo resize2fs $partition
+check_success

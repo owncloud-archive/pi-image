@@ -1,0 +1,106 @@
+#!/bin/sh
+#
+# A customized version of https://github.com/zyga/devtools/blob/master/ubuntu-image.
+
+verify_installed()
+{
+	package_name=$1
+	dpkg-query --show $1 > /dev/null 2>&1
+	if [ $? -ne 0 ]; then
+		echo "Please install the $1 package"
+		exit 1
+	fi
+}
+
+# This script has some required packages. Print nice messages if they're
+# missing.
+verify_installed wget
+verify_installed kpartx
+
+version="0.8"
+
+image_kind=vanilla
+device=pi2
+
+# Pick the right values for ubuntu-device-flash
+
+channel=stable
+os=ubuntu-core.canonical
+gadget_hash=
+gadget_url=
+kernel_hash=
+kernel_url=
+os_hash=
+os_url=
+udf_hash=d8acf6b199a0a73def00dd61302afc99718cee101ec0c8d2ef845168ca9b5820ed943e90f17a6d743ee368b2337f956765670f4128210dca7df71501035f7391
+udf_url=http://people.canonical.com/~mvo/all-snaps/ubuntu-device-flash
+kernel=canonical-pi2-linux.canonical
+gadget=owncloud-pi2.kyrofa
+
+cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/ubuntu-image"
+
+download() {
+    blob_url="$1"
+    blob_hash="$2"
+    msg="$3"
+    if [ -f "$cache_dir/blob.$blob_hash" ]; then
+        cached_blob_hash=$(sha512sum < "$cache_dir/blob.$blob_hash" | cut -f 1 -d ' ')
+        if [ "$cached_blob_hash" != "$blob_hash" ]; then
+            echo "Removing corrupted copy of $(basename "$blob_url")"
+            rm -f "$cache_dir/blob.$blob_hash"
+        else
+            return
+        fi
+    fi
+    if [ -z "$msg" ]; then
+        echo "Downloading $blob_url..."
+    else
+        echo "$msg"
+    fi
+    blob_download_fname=$(tempfile --prefix=blob-)
+    trap "rm -f $blob_download_fname" EXIT
+    if ! wget --quiet --user-agent="ubuntu-image/$version" --output-document="$blob_download_fname" "$blob_url"; then
+        echo "Failed to download $blob_url"
+        exit 1
+    fi
+    blob_download_hash=$(sha512sum < "$blob_download_fname" | cut -f 1 -d ' ')
+    if [ "$blob_download_hash" != "$blob_hash" ]; then
+        echo "Failed to verify integrity of $blob_url"
+        exit 1
+    fi
+    mkdir -p "$cache_dir"
+    mv --no-clobber "$blob_download_fname" "$cache_dir/blob.$blob_hash"
+}
+
+# Download and verify integrity of ubuntu-device-flash
+
+if [ -n "$udf_url" ]; then
+    download "$udf_url" "$udf_hash" "Downloading ubuntu-device-flash..."
+    udf="$cache_dir/blob.$udf_hash"
+    chmod +x "$udf"
+fi
+
+# Download snaps that are not published in the store
+
+if [ -n "$os_url" ]; then
+    download "$os_url" "$os_hash" "Downloading OS snap..."
+    os="$cache_dir/blob.$os_hash"
+fi
+if [ -n "$kernel_url" ]; then
+    download "$kernel_url" "$kernel_hash" "Downloading kernel snap..."
+    kernel="$cache_dir/blob.$kernel_hash"
+fi
+if [ -n "$gadget_url" ]; then
+    download "$gadget_url" "$gadget_hash" "Downloading gadget snap..."
+    gadget="$cache_dir/blob.$gadget_hash"
+fi
+
+test -z "$os" && echo "BUG: no OS snap for device: $device" && exit 2
+test -z "$kernel" && echo "BUG: no kernel snap for device: $device" && exit 2
+test -z "$gadget" && echo "BUG: no gadget snap for device: $device" && exit 2
+
+# Run ubuntu device flash
+
+exec sudo "$udf" core rolling \
+     --channel "$channel" --kernel "$kernel" --os "$os" --gadget "$gadget" \
+     -o "$device.img"
